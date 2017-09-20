@@ -1,0 +1,18 @@
+`ifndef ROUTER_PKG
+  `define ROUTER_PKG
+
+  package RouterPkg;
+    /* NoC Specification Structures and Enumerations
+     * Students are encouraged to use these definintions in their code for
+     * better readability and debugging */
+
+    // Generic fixed size packet
+    typedef struct packed {
+      logic [3:0] src;
+      logic [3:0] dest;
+      logic [23:0] data;
+    } pkt_t;
+  endpackage : RouterPkg
+
+  import RouterPkg::*;
+`endif
