@@ -40,8 +40,8 @@ endmodule : Node
  */
 module FIFO #(parameter WIDTH=32) (
     input logic              clock, reset_n,
-    input logic [WIDTH-1:0]  data_in
-    input logic              we, re
+    input logic [WIDTH-1:0]  data_in,
+    input logic              we, re,
     output logic [WIDTH-1:0] data_out,
     output logic             full, empty);
 
