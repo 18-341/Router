@@ -460,7 +460,7 @@ feedback.
 
 ### Part 1
 
-Develop your node solution in a file named **Node_part1.sv**.  Tag it with
+Develop your node solution in a file named **Node.sv**.  Tag it with
 "final_part1" and ensure you push your repo to GitHub.
 
 There will be no demo for Part 1.  We will simulate your code and grade the

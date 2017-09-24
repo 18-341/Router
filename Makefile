@@ -4,7 +4,7 @@ TARGET = simv
 # Source files
 SRC = Node.sv Router.sv RouterTB.sv Top.sv
 SRC += $(wildcard *.sv)
-SRC = $(sort $(SRC)) # Removes duplicates
+SRC := $(sort $(SRC)) # Removes duplicates
 
 # Set the number of threads to use for parallel compilation (2 * cores)
 CORES = $(shell getconf _NPROCESSORS_ONLN)
@@ -32,8 +32,8 @@ default : full
 full : $(SRC)
 	$(SIM) $(VCSFLAGS) $(INC_V_FLAGS) $(INC_SV_FLAGS) -o $(TARGET) $(SRC)
 
-prelab : Node_part1.sv nodeTB.sv
-	$(SIM) $(VCSFLAG) Node.sv nodeTB.sv
+prelab : Node.sv nodeTB.sv
+	$(SIM) $(VCSFLAGS) Node.sv nodeTB.sv
 
 clean:
 	-rm -r csrc
@@ -42,4 +42,4 @@ clean:
 	-rm -r $(TARGET).daidir
 	-rm ucli.key
 
-.PHONY : full prelab clean
+.PHONY : default full prelab clean
