@@ -24,19 +24,24 @@
 ////      ./simv {-gui} {+{plusargs ... }} {+vcs+finish+{d}} {+VERBOSE={1,2,3}}
 ////      e.g. ./simv -gui +STRESS +PERFORMANCE +vcs+finish+10000 +VERBOSE=3
 ////
-////     - +BASIC:       transfer one packet at a time between every node pair
-////                     within the same router
-////     - +ACROSS:      transfer one packet at a time between every node pair
-////                     going across the bridge
-////     - +BROADCAST:   test triangular concurrency between every node pair in
-////                     the same router; for example 0->1 1->2 2->3
-////                     simultaneously
-////     - +STRESS:      TB every node to bombard a single destination with
-////                     packets to stress internal queues
-////     - +FAIRNESS:    TB checks for transaction fairness at each destination
-////                     node by sending three packets simultaneously
-////     - +PERFORMANCE: deterministically measures router performance under
-////                     real-world conditions
+////     - +BASIC:        transfer one packet at a time between every node pair
+////                      within the same router
+////     - +ACROSS:       transfer one packet at a time between every node pair
+////                      going across the bridge
+////     - +BROADCAST:    test triangular concurrency between every node pair in
+////                      the same router; for example 0->1 1->2 2->3
+////                      simultaneously
+////     - +STRESS:       TB every node to bombard a single destination with
+////                      packets to stress internal queues
+////     - +ORDERING:     (NOT REQUIRED!!!) TB checks for transaction fairness
+////                      at each destination node by sending three packets
+////                      simultaneously and determining the number of unique
+////                      orderings
+////     - +FAIRNESS:     TB checks for transaction fairness at each destination
+////                      node by sending three packets simultaneously and
+////                      counting the number of first receipts for each source
+////     - +PERFORMANCE:  deterministically measures router performance under
+////                      real-world conditions
 ////
 module automatic RouterTB (
   input logic cQ_full[`NODES],
@@ -45,6 +50,19 @@ module automatic RouterTB (
   output logic clock, reset_n,
   output pkt_t pkt_in[`NODES],
   output logic pkt_in_avail[`NODES]);
+
+  function bit are_close (integer a, b, c, real tol=0.1);
+    if ((1.0-tol) * b > a || a > (1.0+tol) * b) return 1'b0;
+    if ((1.0-tol) * c > a || a > (1.0+tol) * c) return 1'b0;
+
+    if ((1.0-tol) * a > b || b > (1.0+tol) * a) return 1'b0;
+    if ((1.0-tol) * c > b || b > (1.0+tol) * c) return 1'b0;
+
+    if ((1.0-tol) * a > c || c > (1.0+tol) * a) return 1'b0;
+  if ((1.0-tol) * b > c || c > (1.0+tol) * b) return 1'b0;
+
+    return 1'b1;
+  endfunction
 
   /* !!WARNING!!
    *   For some reason, VCS does not treat ##N cycle delays as blocking events
@@ -234,7 +252,8 @@ module automatic RouterTB (
 
   initial begin
     PktWrapper tmp_1, tmp_2, tmp_3;
-    logic [3:0][`NUM_FAIRNESS-1:0] fair_order[`NUM_FAIRNESS]; // FAIRNESS
+    logic [3][3:0] fair_order[6]; // ORDERING
+    integer fair_first[6]; // FAIRNESS
     integer cycle_count = 0; // PERFORMANCE
 
     pkt_in = '{default: '0}; // `NULL_PKT placeholder
@@ -391,6 +410,119 @@ module automatic RouterTB (
                 "\n"});
     end
 
+    if ($test$plusargs("ORDERING")) begin
+      $display({"\n",
+                "-----------------------------------------------------------\n",
+                " <Started> Ordering Test (not required) \n",
+                "-----------------------------------------------------------",
+                "\n"});
+      do_reset;
+      ##1 ;
+
+      $display("Checking fairness in router 1");
+      for (int i=0; i<3; i++) begin
+        automatic int fork_i = i;
+        $display("\nFairness destination is **%d**", fork_i);
+
+        for (int j=0; j<6; j++) begin
+          fork
+            begin
+              send_pkt(4, fork_i, 1'b0);
+            end
+
+            begin
+              // See warning, this must be a blocking event
+              repeat(6) @(posedge clock) ;
+              send_pkt((fork_i+1)%3, fork_i, 1'b0);
+            end
+
+            begin
+              // See warning, this must be a blocking event
+              repeat(6) @(posedge clock) ;
+              send_pkt((fork_i+2)%3, fork_i, 1'b0);
+            end
+          join
+
+          recv_M.get(tmp_1);
+          recv_M.get(tmp_2);
+          recv_M.get(tmp_3);
+
+          fair_order[j] = {tmp_1.pkt.src, tmp_2.pkt.src, tmp_3.pkt.src};
+        end
+
+        assert(!(fair_order[0] inside {fair_order[1:5]})
+               && !(fair_order[1] inside {fair_order[0], fair_order[2:5]})
+               && !(fair_order[2] inside {fair_order[0:1], fair_order[3:5]})
+               && !(fair_order[3] inside {fair_order[0:2], fair_order[4:5]})
+               && !(fair_order[4] inside {fair_order[0:3], fair_order[5]})
+               && !(fair_order[5] inside {fair_order[0:4]})) else
+           $error({"Fairness was not upheld for the following orderings (src):\n",
+                   "(%d %d %d) (%d %d %d) (%d %d %d)",
+                   "(%d %d %d) (%d %d %d) (%d %d %d)"},
+                 fair_order[0][0], fair_order[0][1], fair_order[0][2],
+                 fair_order[1][0], fair_order[1][1], fair_order[1][2],
+                 fair_order[2][0], fair_order[2][1], fair_order[2][2],
+                 fair_order[3][0], fair_order[3][1], fair_order[3][2],
+                 fair_order[4][0], fair_order[4][1], fair_order[4][2],
+                 fair_order[5][0], fair_order[5][1], fair_order[5][2]);
+      end
+
+
+      $display("Checking fairness in router 2");
+      for (int i=0; i<3; i++) begin
+        automatic int fork_i = i;;
+        $display("\nFairness destination is **%d**", fork_i);
+
+        for (int j=0; j<6; j++) begin
+          fork
+            begin
+              send_pkt(0, 3 + fork_i, 1'b0);
+            end
+
+            begin
+              // See warning, this must be a blocking event
+              repeat(6) @(posedge clock) ;
+              send_pkt(3 + (fork_i+1)%3, 3 + fork_i, 1'b0);
+            end
+
+            begin
+              // See warning, this must be a blocking event
+              repeat(6) @(posedge clock) ;
+              send_pkt(3 + (fork_i+2)%3, 3 + fork_i, 1'b0);
+            end
+          join
+
+          recv_M.get(tmp_1);
+          recv_M.get(tmp_2);
+          recv_M.get(tmp_3);
+
+          fair_order[j] = {tmp_1.pkt.src, tmp_2.pkt.src, tmp_3.pkt.src};
+        end
+
+        assert(!(fair_order[0] inside {fair_order[1:5]})
+               && !(fair_order[1] inside {fair_order[0], fair_order[2:5]})
+               && !(fair_order[2] inside {fair_order[0:1], fair_order[3:5]})
+               && !(fair_order[3] inside {fair_order[0:2], fair_order[4:5]})
+               && !(fair_order[4] inside {fair_order[0:3], fair_order[5]})
+               && !(fair_order[5] inside {fair_order[0:4]})) else
+           $error({"Fairness was not upheld for the following orderings (src):\n",
+                   "(%d %d %d) (%d %d %d) (%d %d %d)",
+                   "(%d %d %d) (%d %d %d) (%d %d %d)"},
+                 fair_order[0][0], fair_order[0][1], fair_order[0][2],
+                 fair_order[1][0], fair_order[1][1], fair_order[1][2],
+                 fair_order[2][0], fair_order[2][1], fair_order[2][2],
+                 fair_order[3][0], fair_order[3][1], fair_order[3][2],
+                 fair_order[4][0], fair_order[4][1], fair_order[4][2],
+                 fair_order[5][0], fair_order[5][1], fair_order[5][2]);
+      end
+
+      $display({"\n",
+                "-----------------------------------------------------------\n",
+                " <Finished> Ordering Test (not required) \n",
+                "-----------------------------------------------------------",
+                "\n"});
+    end
+
     if ($test$plusargs("FAIRNESS")) begin
       $display({"\n",
                 "-----------------------------------------------------------\n",
@@ -403,6 +535,8 @@ module automatic RouterTB (
       $display("Checking fairness in router 1");
       for (int i=0; i<3; i++) begin
         automatic int fork_i = i;
+        $display("\nFairness destination is **%d**", fork_i);
+        fair_first = '{0, 0, 0, 0, 0, 0};
 
         for (int j=0; j<`NUM_FAIRNESS; j++) begin
           fork
@@ -427,21 +561,30 @@ module automatic RouterTB (
           recv_M.get(tmp_2);
           recv_M.get(tmp_3);
 
-          fair_order[i] = {tmp_1.pkt.src, tmp_2.pkt.src, tmp_3.pkt.src};
+          fair_first[tmp_1.pkt.src] += 1;
         end
+
+        $display({"Number of first receipts:\n",
+                 "(%0d: %d) (%0d: %d) (%0d: %d)"},
+                 (fork_i+1)%3, fair_first[(fork_i+1)%3],
+                 (fork_i+2)%3, fair_first[(fork_i+2)%3],
+                 4, fair_first[4]);
+
+        assert(are_close(fair_first[(fork_i+1)%3], fair_first[(fork_i+2)%3],
+                         fair_first[4])) else
+            $error({"Some packets were received first more than others:\n",
+                    "(%0d: %d) (%0d: %d) (%0d: %d)"},
+                   (fork_i+1)%3, fair_first[(fork_i+1)%3],
+                   (fork_i+2)%3, fair_first[(fork_i+2)%3],
+                   4, fair_first[4]);
       end
 
-      assert(fair_order[0] != fair_order[1] && fair_order[1] != fair_order[2]
-             && fair_order[2] != fair_order[0]) else
-        $error({"Fairness was not upheld for the following orderings:\n",
-                "(%d %d %d) (%d %d %d) (%d %d %d)"},
-               fair_order[0][0], fair_order[0][1], fair_order[0][2],
-               fair_order[1][0], fair_order[1][1], fair_order[1][2],
-               fair_order[2][0], fair_order[2][1], fair_order[2][2]);
 
       $display("Checking fairness in router 2");
       for (int i=0; i<3; i++) begin
         automatic int fork_i = i;
+        $display("\nFairness destination is **%d**", fork_i);
+        fair_first = '{0, 0, 0, 0, 0, 0};
 
         for (int j=0; j<`NUM_FAIRNESS; j++) begin
           fork
@@ -466,17 +609,24 @@ module automatic RouterTB (
           recv_M.get(tmp_2);
           recv_M.get(tmp_3);
 
-          fair_order[i] = {tmp_1.pkt.src, tmp_2.pkt.src, tmp_3.pkt.src};
+          fair_first[tmp_1.pkt.src] += 1;
         end
-      end
 
-      assert(fair_order[0] != fair_order[1] && fair_order[1] != fair_order[2]
-             && fair_order[2] != fair_order[0]) else
-        $error({"Fairness was not upheld for the following orderings:\n",
-                "(%d %d %d) (%d %d %d) (%d %d %d)"},
-               fair_order[0][0], fair_order[0][1], fair_order[0][2],
-               fair_order[1][0], fair_order[1][1], fair_order[1][2],
-               fair_order[2][0], fair_order[2][1], fair_order[2][2]);
+        $display({"Number of first receipts:\n",
+                  "(%0d: %d) (%0d: %d) (%0d: %d)"},
+                 3 + (fork_i+1)%3, fair_first[3 + (fork_i+1)%3],
+                 3 + (fork_i+2)%3, fair_first[3 + (fork_i+2)%3],
+                 0, fair_first[0]);
+
+        assert(are_close(fair_first[3 + (fork_i+1)%3],
+                         fair_first[3 + (fork_i+2)%3],
+                         fair_first[0])) else
+            $error({"Some packets were received first more than others:\n",
+                    "(%0d: %d) (%0d: %d) (%0d: %d)"},
+                   3 + (fork_i+1)%3, fair_first[3 + (fork_i+1)%3],
+                   3 + (fork_i+2)%3, fair_first[3 + (fork_i+2)%3],
+                   0, fair_first[0]);
+      end
 
       $display({"\n",
                 "-----------------------------------------------------------\n",

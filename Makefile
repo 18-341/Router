@@ -4,6 +4,7 @@ TARGET = simv
 # Source files
 SRC = Node.sv Router.sv RouterTB.sv Top.sv
 SRC += $(wildcard *.sv)
+SRC := $(filter-out Node_part1.sv nodeTB.sv, $(SRC))
 SRC := $(sort $(SRC)) # Removes duplicates
 
 # Set the number of threads to use for parallel compilation (2 * cores)
