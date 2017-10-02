@@ -583,7 +583,7 @@ module automatic RouterTB (
       $display("Checking fairness in router 2");
       for (int i=0; i<3; i++) begin
         automatic int fork_i = i;
-        $display("\nFairness destination is **%d**", fork_i);
+        $display("\nFairness destination is **%d**", 3 + fork_i);
         fair_first = '{0, 0, 0, 0, 0, 0};
 
         for (int j=0; j<`NUM_FAIRNESS; j++) begin
