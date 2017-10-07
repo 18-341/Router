@@ -31,7 +31,8 @@
 ////     - +BROADCAST:    test triangular concurrency between every node pair in
 ////                      the same router; for example 0->1 1->2 2->3
 ////                      simultaneously
-////     - +STRESS:       TB every node to bombard a single destination with
+////     - +STRESS_SRC:   TB one node bombard all others with packets
+////     - +STRESS_DEST:  TB has every node bombard a single destination with
 ////                      packets to stress internal queues
 ////     - +ORDERING:     (NOT REQUIRED!!!) TB checks for transaction fairness
 ////                      at each destination node by sending three packets
@@ -51,7 +52,7 @@ module automatic RouterTB (
   output pkt_t pkt_in[`NODES],
   output logic pkt_in_avail[`NODES]);
 
-  function bit are_close (integer a, b, c, real tol=0.1);
+  function logic are_close (integer a, b, c, real tol=0.1);
     if ((1.0-tol) * b > a || a > (1.0+tol) * b) return 1'b0;
     if ((1.0-tol) * c > a || a > (1.0+tol) * c) return 1'b0;
 
@@ -73,7 +74,7 @@ module automatic RouterTB (
   // Wrapper for NoC packets to allow for inter-process synchronizaton
   class PktWrapper;
     rand pkt_t pkt; // NoC packet
-    time send_time, recv_time; // Packet creation and receive times
+    time create_time, send_time, recv_time; // Packet creation and receive times
     event received; // Inter-process event
 
     constraint legal_pkt {
@@ -82,7 +83,7 @@ module automatic RouterTB (
       pkt.dest inside {[0:`NODES-1]};}
 
     function new;
-      this.send_time = $time;
+      this.create_time = $time;
     endfunction : new
   endclass : PktWrapper
 
@@ -119,7 +120,7 @@ module automatic RouterTB (
     end
     if (debug_level > 2) $info("Initialized source semaphores");
 
-    reset_n <= 1'b1;
+    #1 reset_n <= 1'b1;
   endtask : do_reset
 
   /*
@@ -162,10 +163,11 @@ module automatic RouterTB (
 
         if (debug_level > 1) begin
           $info({"Monitor%0d detected packet {src: %d, dest: %d, data: %h} ",
-                 "sent @%0t and received @%0t"},
+                 "created @%0t, sent @%0t and received @%0t"},
                 node_id,
                 pkt_from_M.pkt.src, pkt_from_M.pkt.dest, pkt_from_M.pkt.data,
-                pkt_from_M.send_time, pkt_from_M.recv_time);
+                pkt_from_M.create_time, pkt_from_M.send_time,
+                pkt_from_M.recv_time);
         end
 
         recv_M.put(pkt_from_M);
@@ -185,23 +187,31 @@ module automatic RouterTB (
    * before passing
    */
   task automatic send_pkt(input int src=-1, dest=-1,
-                          input bit do_delay=1'b0);
-    PktWrapper pkt_to_M;
+                          input logic do_delay=1'b0);
+    PktWrapper pkt_to_M = new();
 
-    if (src == -1) src = $urandom_range(`NODES-1);
+    if (src == -1 && dest == -1) begin
+      pkt_to_M.randomize();
+    end else if (src inside {[0:`NODES-1]} && dest == -1) begin
+      pkt_to_M.randomize() with {pkt.src == src;};
+    end else if (src == -1 && dest inside {[0:`NODES-1]}) begin
+      pkt_to_M.randomize() with {pkt.dest == dest;};
+    end else if (src inside {[0:`NODES-1]} && dest inside {[0:`NODES-1]}
+                 && src != dest) begin
+       pkt_to_M.randomize() with {pkt.src == src; pkt.dest == dest;};
+    end else begin
+      $error("Unable to satisfy constraints for src=%0d dest=%0d", src, dest);
+    end
+
+    src = pkt_to_M.pkt.src;
+    dest = pkt_to_M.pkt.dest;
 
     node_sem[src].get(1); // BEGIN critical region
-      pkt_to_M = new();
-      if (dest == -1) begin
-        pkt_to_M.randomize() with {pkt.src == src;};
-      end else begin
-        pkt_to_M.randomize() with {pkt.src == src; pkt.dest == dest;};
-      end
-      dest = pkt_to_M.pkt.dest;
-
       #1 ;
       wait(~cQ_full[src]); // Must check after reactive region
-      if (do_delay) repeat($urandom_range(`MAX_DELAY)) @(cb_main);
+      if (do_delay) repeat($urandom_range(`MAX_DELAY)) @(posedge clock);
+
+      pkt_to_M.send_time = $time; // Update the packet with accurate send time
 
       assert(~cQ_full[src]) else begin
         $error("Node queue unexpectedly became full, should not attempt");
@@ -258,6 +268,8 @@ module automatic RouterTB (
 
     pkt_in = '{default: '0}; // `NULL_PKT placeholder
     pkt_in_avail = '{default: 1'b0};
+
+    do_reset;
 
     if ($test$plusargs("BASIC")) begin
       $display({"\n",
@@ -377,10 +389,10 @@ module automatic RouterTB (
                 "\n"});
     end
 
-    if ($test$plusargs("STRESS")) begin
+    if ($test$plusargs("STRESS_DEST")) begin
       $display({"\n",
                 "-----------------------------------------------------------\n",
-                " <Started> Node Stress Test\n",
+                " <Started> Node Destination Stress Test\n",
                 "-----------------------------------------------------------",
                 "\n"});
       do_reset;
@@ -389,6 +401,39 @@ module automatic RouterTB (
       for (int i=0; i<`NODES; i++) begin
         automatic int fork_i = i;
         $display("Stressing destination port %0d", i);
+
+        fork // Isolating thread
+          begin
+            for (int j=0; j<`NUM_STRESS; j++) begin
+              fork
+                send_pkt(,fork_i,1'b1);
+              join_none
+            end
+
+            wait fork;
+          end
+        join
+      end
+
+      $display({"\n",
+                "-----------------------------------------------------------\n",
+                " <Finished> Node Destination Stress Test\n",
+                "-----------------------------------------------------------",
+                "\n"});
+    end
+
+    if ($test$plusargs("STRESS_SRC")) begin
+      $display({"\n",
+                "-----------------------------------------------------------\n",
+                " <Started> Node Source Stress Test\n",
+                "-----------------------------------------------------------",
+                "\n"});
+      do_reset;
+      ##1 ;
+
+      for (int i=0; i<`NODES; i++) begin
+        automatic int fork_i = i;
+        $display("Stressing source port %0d", i);
 
         fork // Isolating thread
           begin
@@ -405,7 +450,7 @@ module automatic RouterTB (
 
       $display({"\n",
                 "-----------------------------------------------------------\n",
-                " <Finished> Node Stress Test\n",
+                " <Finished> Node Source Stress Test\n",
                 "-----------------------------------------------------------",
                 "\n"});
     end
