@@ -22,25 +22,23 @@
 ////   1. Compile your code using the Makefile supplied "make {full/clean}"
 ////   2. Run the testbench with one or more of the following runtime arguments
 ////      ./simv {-gui} {+{plusargs ... }} {+vcs+finish+{d}} {+VERBOSE={1,2,3}}
-////      e.g. ./simv -gui +STRESS +PERFORMANCE +vcs+finish+10000 +VERBOSE=3
+////      e.g. ./simv -gui +STRESS +PERFORMANCE +vcs+finish+1000000 +VERBOSE=3
 ////
-////     - +BASIC:        transfer one packet at a time between every node pair
+////     - +BASIC:        Transfer one packet at a time between every node pair
 ////                      within the same router
-////     - +ACROSS:       transfer one packet at a time between every node pair
+////     - +ACROSS:       Transfer one packet at a time between every node pair
 ////                      going across the bridge
 ////     - +BROADCAST:    test triangular concurrency between every node pair in
 ////                      the same router; for example 0->1 1->2 2->3
 ////                      simultaneously
-////     - +STRESS_SRC:   TB one node bombard all others with packets
+////     - +STRESS_SRC:   TB has one node bombard all other destinations with
+////                      packets
 ////     - +STRESS_DEST:  TB has every node bombard a single destination with
-////                      packets to stress internal queues
-////     - +ORDERING:     (NOT REQUIRED!!!) TB checks for transaction fairness
-////                      at each destination node by sending three packets
-////                      simultaneously and determining the number of unique
-////                      orderings
+////                      packets
 ////     - +FAIRNESS:     TB checks for transaction fairness at each destination
-////                      node by sending three packets simultaneously and
-////                      counting the number of first receipts for each source
+////                      node by sending three packets simultaneously across
+////                      the router-to-router port and counting the number of
+////                      first receipts for each source
 ////     - +PERFORMANCE:  deterministically measures router performance under
 ////                      real-world conditions
 ////
@@ -100,13 +98,14 @@ module automatic RouterTB (
   // Conduct a system reset and flush the inter-process communications
   task do_reset;
     $srandom(18341);
+
     reset_n = 1'b1;
-    reset_n = 1'b0;
+    reset_n <= 1'b0;
 
     // Initialize inter-process FIFOs with no bound
-    for (int i=0; i<`NODES; i++) begin
-      for (int j=0; j<`NODES; j++) begin
-        send_M[i][j] = new(0);
+    for (int src=0; src < 6; src++) begin
+      for (int dest=0; dest < 6; dest++) begin
+        send_M[src][dest] = new(0);
       end
     end
     if (debug_level > 2) $info("Initialized send_M mailboxes");
@@ -115,8 +114,8 @@ module automatic RouterTB (
     if (debug_level > 2) $info("Initialized recv_M mailbox");
 
     // Initialize semaphores as mutexes
-    for (int i=0; i<`NODES; i++) begin
-      node_sem[i] = new(1);
+    for (int src=0; src < 6; src++) begin
+      node_sem[src] = new(1);
     end
     if (debug_level > 2) $info("Initialized source semaphores");
 
@@ -138,10 +137,13 @@ module automatic RouterTB (
 
       pkt_from_node = pkt_out[node_id];
 
+      assert(!$isunknown(pkt_from_node)) else
+        $fatal("Monitor%0d detected packet with unknown bits %b, must quit",
+               node_id, pkt_from_node);
+
       assert(pkt_from_node.dest == node_id) else
-        $error("Monitor%0d detected packet with incorrect dest=%d",
-               node_id,
-               pkt_from_node.dest);
+        $error("Monitor%0d detected packet with incorrect dest=%0d",
+               node_id, pkt_from_node.dest);
 
       if (send_M[pkt_from_node.src]
                 [pkt_from_node.dest].try_get(pkt_from_M)) begin
@@ -149,22 +151,24 @@ module automatic RouterTB (
 
         assert (pkt_from_M.pkt.src == pkt_from_node.src) else
           $error({"Monitor%0d detected violation of sequential consistency ",
-                  "for packet {src: %d, dest: %d, data: %h}, expected ",
-                  "{src: %d, dest: %d, data: %h} from mailbox"},
+                  "for user packet {src: %0d, dest: %0d, data: %h}, expected ",
+                  "{src: %0d, dest: %0d, data: %h} from mailbox"},
                  node_id,
                  pkt_from_node.src, pkt_from_node.dest, pkt_from_node.data,
                  pkt_from_M.pkt.src, pkt_from_M.pkt.dest, pkt_from_M.pkt.data);
 
         assert(pkt_from_M.pkt.data == pkt_from_node.data) else
-          $error({"Monitor%0d detected corrupted data %h corresponding to %h ",
-                  "from mailbox"},
-                 node_id,
-                 pkt_from_node.data, pkt_from_M.pkt.data);
+          $error("Monitor%0d detected corrupt data from user %h should be %h",
+                 node_id, pkt_from_node.data, pkt_from_M.pkt.data);
 
         if (debug_level > 1) begin
-          $info({"Monitor%0d detected packet {src: %d, dest: %d, data: %h} ",
+          $info({"Monitor%0d detected user packet ",
+                 "{src: %0d, dest: %d0, data: %h} ",
+                 "corresponding to mailbox entry ",
+                 "{src: %d, dest: %d, data: %h} ",
                  "created @%0t, sent @%0t and received @%0t"},
                 node_id,
+                pkt_from_node.src, pkt_from_node.dest, pkt_from_node.data,
                 pkt_from_M.pkt.src, pkt_from_M.pkt.dest, pkt_from_M.pkt.data,
                 pkt_from_M.create_time, pkt_from_M.send_time,
                 pkt_from_M.recv_time);
@@ -173,8 +177,8 @@ module automatic RouterTB (
         recv_M.put(pkt_from_M);
         -> pkt_from_M.received; // Notify blocking process in send_pkt
       end else begin
-        $error({"Monitor%0d detected untracked packet ",
-                "{src: %d, dest: %d, data: %h}"},
+        $error({"Monitor%0d detected untracked user packet ",
+                "{src: %0d, dest: %0d, data: %h}"},
                node_id,
                pkt_from_node.src, pkt_from_node.dest, pkt_from_node.data);
         $finish;
@@ -223,8 +227,8 @@ module automatic RouterTB (
       send_M[src][dest].put(pkt_to_M);
 
       if (debug_level > 1) begin
-        $info("Testbench dispatched packet from %d to %d",
-              pkt_to_M.pkt.src, pkt_to_M.pkt.dest);
+        $info("Testbench dispatched packet from %0d to %0d with data %h",
+              pkt_to_M.pkt.src, pkt_to_M.pkt.dest, pkt_to_M.pkt.data);
       end
 
       @(posedge clock); // See warning, this must be a blocking event
@@ -243,7 +247,7 @@ module automatic RouterTB (
 
   // Unconditional timeout so that students do not have to worry about hanging
   initial begin
-    ##10000000 ;
+    ##1000000;
     $display("%m @%0t: Testbench issued timeout", $time);
     $finish;
    end
@@ -251,18 +255,17 @@ module automatic RouterTB (
   // Spawn node monitors
   initial begin
     fork // Isolating thread
-      for (int i=0; i<`NODES; i++) begin
-        automatic int fork_i = i;
+      for (int dest=0; dest < 6; dest++) begin
+        automatic int fork_dest = dest;
         fork
-          monitor_recv(fork_i);
-        join_none
+          monitor_recv(fork_dest);
+        join_none // Never join
       end
     join
   end
 
   initial begin
     PktWrapper tmp_1, tmp_2, tmp_3;
-    logic [3][3:0] fair_order[6]; // ORDERING
     integer fair_first[6]; // FAIRNESS
     integer cycle_count = 0; // PERFORMANCE
 
@@ -280,21 +283,21 @@ module automatic RouterTB (
       do_reset;
       ##1 ;
 
-      $display("Sending packets inside router 1");
-      for (int i=0; i<3; i++) begin
-        for (int j=0; j<3; j++) begin
-          if (i == j) continue;
+      $display("Sending packets inside router 1 with random delay");
+      for (int src=0; src < 3; src++) begin
+        for (int dest=0; dest < 3; dest++) begin
+          if (src == dest) continue;
 
-          send_pkt(i, j, 1'b1);
+          send_pkt(src, dest, 1'b1);
         end
       end
 
-      $display("Sending packets inside router 2");
-      for (int i=4; i<6; i++) begin
-        for (int j=4; j<6; j++) begin
-          if (i == j) continue;
+      $display("Sending packets inside router 2 with random delay");
+      for (int src=4; src < 6; src++) begin
+        for (int dest=4; dest < 6; dest++) begin
+          if (src == dest) continue;
 
-          send_pkt(i, j, 1'b1);
+          send_pkt(src, dest, 1'b1);
         end
       end
 
@@ -314,17 +317,17 @@ module automatic RouterTB (
       do_reset;
       ##1 ;
 
-      $display("Sending packets from router 1 to router 2");
-      for (int i=0; i<3; i++) begin
-        for (int j=4; j<6; j++) begin
-          send_pkt(i, j, 1'b1);
+      $display("Sending packets from router 1 to router 2 with random delay");
+      for (int src=0; src < 3; src++) begin
+        for (int dest=4; dest < 6; dest++) begin
+          send_pkt(src, dest, 1'b1);
         end
       end
 
-      $display("Sending packets from router 2 to router 1");
-      for (int i=4; i<6; i++) begin
-        for (int j=0; j<3; j++) begin
-          send_pkt(i, j, 1'b1);
+      $display("Sending packets from router 2 to router 1 with random delay");
+      for (int src=4; src < 6; src++) begin
+        for (int dest=0; dest < 3; dest++) begin
+          send_pkt(src, dest, 1'b1);
         end
       end
 
@@ -344,8 +347,8 @@ module automatic RouterTB (
       do_reset;
       ##1 ;
 
-      $display("Sending packets inside router 1");
-      for (int i=0; i<3; i++) begin
+      $display("Sending concurrent packets inside router 1");
+      for (int i=0; i < 3; i++) begin
         automatic int fork_i = i;
         fork
           send_pkt((fork_i+0)%3, (fork_i+1)%3);
@@ -359,12 +362,12 @@ module automatic RouterTB (
 
         assert(tmp_1.recv_time == tmp_2.recv_time
                && tmp_2.recv_time == tmp_3.recv_time) else
-          $error("Packets to nodes %d %d %d were not received simultaneously",
+          $error("Packets to nodes %0d %0d %0d were not simultaneous",
                  tmp_1.pkt.dest, tmp_2.pkt.dest, tmp_3.pkt.dest);
       end
 
       $display("Sending packets inside router 2");
-      for (int i=0; i<3; i++) begin
+      for (int i=0; i < 3; i++) begin
         automatic int fork_i = i;
         fork
           send_pkt(3 + (fork_i+0)%3, 3 + (fork_i+1)%3);
@@ -378,7 +381,7 @@ module automatic RouterTB (
 
         assert(tmp_1.recv_time == tmp_2.recv_time
                && tmp_2.recv_time == tmp_3.recv_time) else
-          $error("Packets to nodes %d %d %d were not received simultaneously",
+          $error("Packets to nodes %0d %0d %0d were not simultaneous",
                  tmp_1.pkt.dest, tmp_2.pkt.dest, tmp_3.pkt.dest);
       end
 
@@ -398,15 +401,15 @@ module automatic RouterTB (
       do_reset;
       ##1 ;
 
-      for (int i=0; i<`NODES; i++) begin
-        automatic int fork_i = i;
-        $display("Stressing destination port %0d", i);
+      for (int dest=0; dest < 6; dest++) begin
+        automatic int fork_dest = dest;
+        $display("Stressing destination node %0d from all other nodes", dest);
 
         fork // Isolating thread
           begin
-            for (int j=0; j<`NUM_STRESS; j++) begin
+            for (int i=0; i < `NUM_STRESS; i++) begin
               fork
-                send_pkt(,fork_i,1'b1);
+                send_pkt(,fork_dest,1'b1);
               join_none
             end
 
@@ -431,15 +434,15 @@ module automatic RouterTB (
       do_reset;
       ##1 ;
 
-      for (int i=0; i<`NODES; i++) begin
-        automatic int fork_i = i;
-        $display("Stressing source port %0d", i);
+      for (int src=0; src < 6; src++) begin
+        automatic int fork_src = src;
+        $display("Stressing source node %0d to all other nodes", src);
 
         fork // Isolating thread
           begin
-            for (int j=0; j<`NUM_STRESS; j++) begin
+            for (int i=0; i < `NUM_STRESS; i++) begin
               fork
-                send_pkt(fork_i,,1'b1);
+                send_pkt(fork_src,,1'b1);
               join_none
             end
 
@@ -455,150 +458,33 @@ module automatic RouterTB (
                 "\n"});
     end
 
-    if ($test$plusargs("ORDERING")) begin
-      $display({"\n",
-                "-----------------------------------------------------------\n",
-                " <Started> Ordering Test (not required) \n",
-                "-----------------------------------------------------------",
-                "\n"});
-      do_reset;
-      ##1 ;
-
-      $display("Checking fairness in router 1");
-      for (int i=0; i<3; i++) begin
-        automatic int fork_i = i;
-        $display("\nFairness destination is **%d**", fork_i);
-
-        for (int j=0; j<6; j++) begin
-          fork
-            begin
-              send_pkt(4, fork_i, 1'b0);
-            end
-
-            begin
-              // See warning, this must be a blocking event
-              repeat(6) @(posedge clock) ;
-              send_pkt((fork_i+1)%3, fork_i, 1'b0);
-            end
-
-            begin
-              // See warning, this must be a blocking event
-              repeat(6) @(posedge clock) ;
-              send_pkt((fork_i+2)%3, fork_i, 1'b0);
-            end
-          join
-
-          recv_M.get(tmp_1);
-          recv_M.get(tmp_2);
-          recv_M.get(tmp_3);
-
-          fair_order[j] = {tmp_1.pkt.src, tmp_2.pkt.src, tmp_3.pkt.src};
-        end
-
-        assert(!(fair_order[0] inside {fair_order[1:5]})
-               && !(fair_order[1] inside {fair_order[0], fair_order[2:5]})
-               && !(fair_order[2] inside {fair_order[0:1], fair_order[3:5]})
-               && !(fair_order[3] inside {fair_order[0:2], fair_order[4:5]})
-               && !(fair_order[4] inside {fair_order[0:3], fair_order[5]})
-               && !(fair_order[5] inside {fair_order[0:4]})) else
-           $error({"Fairness was not upheld for the following orderings (src):\n",
-                   "(%d %d %d) (%d %d %d) (%d %d %d)",
-                   "(%d %d %d) (%d %d %d) (%d %d %d)"},
-                 fair_order[0][0], fair_order[0][1], fair_order[0][2],
-                 fair_order[1][0], fair_order[1][1], fair_order[1][2],
-                 fair_order[2][0], fair_order[2][1], fair_order[2][2],
-                 fair_order[3][0], fair_order[3][1], fair_order[3][2],
-                 fair_order[4][0], fair_order[4][1], fair_order[4][2],
-                 fair_order[5][0], fair_order[5][1], fair_order[5][2]);
-      end
-
-
-      $display("Checking fairness in router 2");
-      for (int i=0; i<3; i++) begin
-        automatic int fork_i = i;;
-        $display("\nFairness destination is **%d**", fork_i);
-
-        for (int j=0; j<6; j++) begin
-          fork
-            begin
-              send_pkt(0, 3 + fork_i, 1'b0);
-            end
-
-            begin
-              // See warning, this must be a blocking event
-              repeat(6) @(posedge clock) ;
-              send_pkt(3 + (fork_i+1)%3, 3 + fork_i, 1'b0);
-            end
-
-            begin
-              // See warning, this must be a blocking event
-              repeat(6) @(posedge clock) ;
-              send_pkt(3 + (fork_i+2)%3, 3 + fork_i, 1'b0);
-            end
-          join
-
-          recv_M.get(tmp_1);
-          recv_M.get(tmp_2);
-          recv_M.get(tmp_3);
-
-          fair_order[j] = {tmp_1.pkt.src, tmp_2.pkt.src, tmp_3.pkt.src};
-        end
-
-        assert(!(fair_order[0] inside {fair_order[1:5]})
-               && !(fair_order[1] inside {fair_order[0], fair_order[2:5]})
-               && !(fair_order[2] inside {fair_order[0:1], fair_order[3:5]})
-               && !(fair_order[3] inside {fair_order[0:2], fair_order[4:5]})
-               && !(fair_order[4] inside {fair_order[0:3], fair_order[5]})
-               && !(fair_order[5] inside {fair_order[0:4]})) else
-           $error({"Fairness was not upheld for the following orderings (src):\n",
-                   "(%d %d %d) (%d %d %d) (%d %d %d)",
-                   "(%d %d %d) (%d %d %d) (%d %d %d)"},
-                 fair_order[0][0], fair_order[0][1], fair_order[0][2],
-                 fair_order[1][0], fair_order[1][1], fair_order[1][2],
-                 fair_order[2][0], fair_order[2][1], fair_order[2][2],
-                 fair_order[3][0], fair_order[3][1], fair_order[3][2],
-                 fair_order[4][0], fair_order[4][1], fair_order[4][2],
-                 fair_order[5][0], fair_order[5][1], fair_order[5][2]);
-      end
-
-      $display({"\n",
-                "-----------------------------------------------------------\n",
-                " <Finished> Ordering Test (not required) \n",
-                "-----------------------------------------------------------",
-                "\n"});
-    end
-
     if ($test$plusargs("FAIRNESS")) begin
       $display({"\n",
                 "-----------------------------------------------------------\n",
-                " <Started> Fairness Test\n",
+                " <Started> Fairness Test Across Router-Router Port\n",
                 "-----------------------------------------------------------",
                 "\n"});
       do_reset;
       ##1 ;
 
       $display("Checking fairness in router 1");
-      for (int i=0; i<3; i++) begin
-        automatic int fork_i = i;
-        $display("\nFairness destination is **%d**", fork_i);
+      for (int dest=0; dest < 3; dest++) begin
+        automatic int fork_dest = dest;
+        $display("\nFairness destination is **%0d** in router 1", fork_dest);
         fair_first = '{0, 0, 0, 0, 0, 0};
 
-        for (int j=0; j<`NUM_FAIRNESS; j++) begin
+        for (int i=0; i < `NUM_FAIRNESS; i++) begin
           fork
             begin
-              send_pkt(4, fork_i, 1'b0);
+              send_pkt(3, fork_dest, 1'b0);
             end
 
             begin
-              // See warning, this must be a blocking event
-              repeat(6) @(posedge clock) ;
-              send_pkt((fork_i+1)%3, fork_i, 1'b0);
+              send_pkt(4, fork_dest, 1'b0);
             end
 
             begin
-              // See warning, this must be a blocking event
-              repeat(6) @(posedge clock) ;
-              send_pkt((fork_i+2)%3, fork_i, 1'b0);
+              send_pkt(5, fork_dest, 1'b0);
             end
           join
 
@@ -609,44 +495,32 @@ module automatic RouterTB (
           fair_first[tmp_1.pkt.src] += 1;
         end
 
-        $display({"Number of first receipts:\n",
-                 "(%0d: %d) (%0d: %d) (%0d: %d)"},
-                 (fork_i+1)%3, fair_first[(fork_i+1)%3],
-                 (fork_i+2)%3, fair_first[(fork_i+2)%3],
-                 4, fair_first[4]);
+        $display("Number of first receipts from source (3: %d) (4: %d) (5: %d)",
+                 fair_first[3], fair_first[4], fair_first[5]);
 
-        assert(are_close(fair_first[(fork_i+1)%3], fair_first[(fork_i+2)%3],
-                         fair_first[4])) else
-            $error({"Some packets were received first more than others:\n",
-                    "(%0d: %d) (%0d: %d) (%0d: %d)"},
-                   (fork_i+1)%3, fair_first[(fork_i+1)%3],
-                   (fork_i+2)%3, fair_first[(fork_i+2)%3],
-                   4, fair_first[4]);
+        assert(are_close(fair_first[3], fair_first[4], fair_first[5])) else
+          $error("Some packets were received more than others");
       end
 
 
       $display("Checking fairness in router 2");
-      for (int i=0; i<3; i++) begin
-        automatic int fork_i = i;
-        $display("\nFairness destination is **%d**", 3 + fork_i);
+      for (int dest=3; dest < 6; dest++) begin
+        automatic int fork_dest = dest;
+        $display("\nFairness destination is **%0d** in router 2", fork_dest);
         fair_first = '{0, 0, 0, 0, 0, 0};
 
-        for (int j=0; j<`NUM_FAIRNESS; j++) begin
+        for (int i=0; i < `NUM_FAIRNESS; i++) begin
           fork
             begin
-              send_pkt(0, 3 + fork_i, 1'b0);
+              send_pkt(0, fork_dest, 1'b0);
             end
 
             begin
-              // See warning, this must be a blocking event
-              repeat(6) @(posedge clock) ;
-              send_pkt(3 + (fork_i+1)%3, 3 + fork_i, 1'b0);
+              send_pkt(1, fork_dest, 1'b0);
             end
 
             begin
-              // See warning, this must be a blocking event
-              repeat(6) @(posedge clock) ;
-              send_pkt(3 + (fork_i+2)%3, 3 + fork_i, 1'b0);
+              send_pkt(2, fork_dest, 1'b0);
             end
           join
 
@@ -657,20 +531,11 @@ module automatic RouterTB (
           fair_first[tmp_1.pkt.src] += 1;
         end
 
-        $display({"Number of first receipts:\n",
-                  "(%0d: %d) (%0d: %d) (%0d: %d)"},
-                 3 + (fork_i+1)%3, fair_first[3 + (fork_i+1)%3],
-                 3 + (fork_i+2)%3, fair_first[3 + (fork_i+2)%3],
-                 0, fair_first[0]);
+        $display("Number of first receipts from source (0: %d) (1: %d) (2: %d)",
+                 fair_first[0], fair_first[1], fair_first[2]);
 
-        assert(are_close(fair_first[3 + (fork_i+1)%3],
-                         fair_first[3 + (fork_i+2)%3],
-                         fair_first[0])) else
-            $error({"Some packets were received first more than others:\n",
-                    "(%0d: %d) (%0d: %d) (%0d: %d)"},
-                   3 + (fork_i+1)%3, fair_first[3 + (fork_i+1)%3],
-                   3 + (fork_i+2)%3, fair_first[3 + (fork_i+2)%3],
-                   0, fair_first[0]);
+        assert(are_close(fair_first[0], fair_first[1], fair_first[2])) else
+          $error("Some packets were received more than others");
       end
 
       $display({"\n",
@@ -691,7 +556,7 @@ module automatic RouterTB (
 
       fork // Isolating thread
         begin
-          for (int i=0; i<`NUM_PERFORMANCE; i++) begin
+          for (int i=0; i < `NUM_PERFORMANCE; i++) begin
             fork
               send_pkt(,,1'b1);
             join_none
